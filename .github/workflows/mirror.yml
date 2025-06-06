@@ -1,0 +1,66 @@
+name: Mirror to public repo
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.MIRROR_TOKEN }}  # Use your PAT for checkout too
+
+      - name: Configure Git with PAT owner identity
+        run: |
+          git config --global user.name "doombot-v1"
+          git config --global user.email "noreply@github.com"
+
+      - name: Remove default GitHub authentication
+        run: |
+          git config --local --unset-all http.https://github.com/.extraheader || true
+
+      - name: Rewrite commits to doombot identity
+        run: |
+          git filter-branch -f --env-filter '
+            export GIT_AUTHOR_NAME="doombot-v1"
+            export GIT_AUTHOR_EMAIL="noreply@github.com"
+            export GIT_COMMITTER_NAME="doombot-v1"
+            export GIT_COMMITTER_EMAIL="noreply@github.com"
+          ' -- --branches main
+
+      - name: Add public-mirror remote
+        run: |
+          git remote add mirror "https://${{ secrets.MIRROR_TOKEN }}@${{ secrets.MIRROR_URL }}"
+
+      - name: Create a one-commit orphan snapshot for mirror
+        run: |
+          # 1) start an orphan branch (no history)
+          git checkout --orphan mirror-temp
+
+          # 2) clear out the index only (keep files in worktree)
+          git rm -rf --cached .
+
+          # 3) stage everything in the working tree
+          git add -A
+
+          # 4) commit under doombot identity
+          GIT_AUTHOR_NAME="doombot-v1" \
+          GIT_AUTHOR_EMAIL="noreply@github.com" \
+          GIT_COMMITTER_NAME="doombot-v1" \
+          GIT_COMMITTER_EMAIL="noreply@github.com" \
+            git commit -m "Public mirror snapshot"
+
+          # 5) rename branch to main so it replaces mirror’s main
+          git branch -M main
+
+      - name: Push just the orphan‐snapshot to public mirror
+        run: |
+          git push mirror main --force
